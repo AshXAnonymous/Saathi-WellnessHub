@@ -30,6 +30,9 @@ import {
 import ModeSelectorV2 from "@/components/ModeSelectorV2";
 import { isDemoMode } from "@/features/wellness/services/DemoMode";
 import NotificationStore from "@/features/wellness/services/NotificationStore";
+import { useNotifications } from "@/features/wellness/hooks/useNotifications";
+import NotificationBell from "@/features/wellness/components/NotificationBell";
+import NotificationPanel from "@/features/wellness/components/NotificationPanel";
 
 /* ============================================================
    HELPERS
@@ -127,6 +130,10 @@ export default function Dashboard(): JSX.Element {
   } | null>(null);
 
   const hasAutoPushedRef = useRef(false);
+
+  const wellnessNotifications = useNotifications();
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
+  const unreadNotificationsCount = wellnessNotifications.filter((n) => !n.read).length;
 
   /* ==========================================================
      API CONFIG
@@ -392,6 +399,9 @@ export default function Dashboard(): JSX.Element {
               data.data[0],
             );
           }
+
+          // Sync backend notifications with local NotificationStore
+          await NotificationStore.syncFromBackend();
         } catch (error) {
           console.error(
             "Failed to load notification:",
@@ -863,6 +873,55 @@ export default function Dashboard(): JSX.Element {
      AUTO-PUSH INSIGHT INTO NOTIFICATION (NO USER INTERACTION NEEDED)
   ========================================================== */
 
+  const dispatchNativeNotification = async (title: string, body: string) => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+
+    const triggerNotification = async () => {
+      // 1. Try Service Worker showNotification (integrates directly with OS / Windows Notification Center)
+      if ("serviceWorker" in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          if (reg && reg.showNotification) {
+            await reg.showNotification(title, {
+              body,
+              icon: "/icons/icon-192x192.png",
+              badge: "/icons/icon-192x192.png",
+              tag: "wellness-insight-auto",
+              renotify: true,
+            });
+            return;
+          }
+        } catch (swErr) {
+          console.debug("ServiceWorker notification failed:", swErr);
+        }
+      }
+
+      // 2. Fallback to Window Notification
+      try {
+        new Notification(title, {
+          body,
+          icon: "/icons/icon-192x192.png",
+          tag: "wellness-insight-auto",
+        });
+      } catch (err) {
+        console.debug("Native Notification fallback error:", err);
+      }
+    };
+
+    if (Notification.permission === "granted") {
+      await triggerNotification();
+    } else if (Notification.permission === "default") {
+      try {
+        const perm = await Notification.requestPermission();
+        if (perm === "granted") {
+          await triggerNotification();
+        }
+      } catch (e) {
+        console.debug("Notification permission request without gesture skipped:", e);
+      }
+    }
+  };
+
   const pushInsightNotification = async () => {
     if (!prediction && !recTitle) return;
 
@@ -891,44 +950,9 @@ export default function Dashboard(): JSX.Element {
       }, 8000);
 
       // 3. Browser / System Push Notification (via Service Worker + Web Notification API)
-      if (typeof window !== "undefined") {
-        if ("serviceWorker" in navigator && "Notification" in window) {
-          navigator.serviceWorker.ready.then((reg) => {
-            if (Notification.permission === "granted") {
-              reg.showNotification(title, {
-                body,
-                icon: "/favicon.ico",
-                badge: "/favicon.ico",
-                tag: "wellness-insight-auto",
-              });
-            }
-          }).catch(() => null);
-        }
+      await dispatchNativeNotification(title, body);
 
-        if ("Notification" in window) {
-          if (Notification.permission === "granted") {
-            try {
-              new Notification(title, {
-                body,
-                icon: "/favicon.ico",
-              });
-            } catch (e) {
-              console.debug("Native notification error:", e);
-            }
-          } else if (Notification.permission === "default") {
-            Notification.requestPermission().then((perm) => {
-              if (perm === "granted") {
-                new Notification(title, {
-                  body,
-                  icon: "/favicon.ico",
-                });
-              }
-            }).catch(() => null);
-          }
-        }
-      }
-
-      // 4. Add to In-App Local Notification Store
+      // 4. Add to In-App Local Notification Store immediately
       NotificationStore.add({
         id: `insight-auto-${Date.now()}`,
         title,
@@ -955,6 +979,9 @@ export default function Dashboard(): JSX.Element {
         }).catch((err) => {
           console.debug("Backend notification insert skipped:", err);
         });
+
+        // Sync with backend so all store instances have DB rows
+        await NotificationStore.syncFromBackend();
       }
     } catch (err) {
       console.error("Failed to push insight notification:", err);
@@ -968,6 +995,27 @@ export default function Dashboard(): JSX.Element {
       pushInsightNotification();
     }
   }, [prediction, recTitle, recBody]);
+
+  // Request notification permission seamlessly on first user interaction if default
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "default") return;
+
+    const handleFirstGesture = () => {
+      Notification.requestPermission()
+        .then((perm) => {
+          if (perm === "granted" && (recTitle || prediction)) {
+            dispatchNativeNotification(`🌿 ${recTitle || "Daily Wellness Insight"}`, recBody);
+          }
+        })
+        .catch(() => null);
+    };
+
+    window.addEventListener("pointerdown", handleFirstGesture, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", handleFirstGesture);
+    };
+  }, [recTitle, recBody, prediction]);
 
   /* ==========================================================
      RENDER
@@ -1371,6 +1419,14 @@ export default function Dashboard(): JSX.Element {
 
             <div className="absolute inset-0 bg-gradient-to-r from-violet-100/30 via-transparent to-pink-100/30" />
 
+            {/* Notification Center Bell in Top Header */}
+            <div className="absolute right-4 top-4 sm:right-7 sm:top-7 z-20">
+              <NotificationBell
+                count={unreadNotificationsCount}
+                onClick={() => setNotificationPanelOpen(true)}
+              />
+            </div>
+
             <div className="relative flex flex-col items-center justify-center text-center">
 
               <div className="mb-3 flex items-center gap-3">
@@ -1713,28 +1769,20 @@ export default function Dashboard(): JSX.Element {
 
               </div>
 
-              {/* Notification */}
-              {notification && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setShowNotification(
-                      (value) =>
-                        !value,
-                    )
-                  }
-                  className="relative flex h-11 w-11 items-center justify-center rounded-full border border-primary/10 bg-primary/5 text-primary transition hover:bg-primary/10"
-                  aria-label="View wellness notification"
-                >
+              {/* Notification Center Trigger */}
+              <button
+                type="button"
+                onClick={() => setNotificationPanelOpen(true)}
+                className="relative flex h-11 w-11 items-center justify-center rounded-full border border-primary/10 bg-primary/5 text-primary transition hover:bg-primary/10 active:scale-95"
+                aria-label="Open Notification Center"
+                title="Open Notification Center"
+              >
+                <Bell className="h-5 w-5" />
 
-                  <Bell className="h-5 w-5" />
-
-                  {!notification.read_at && (
-                    <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-background" />
-                  )}
-
-                </button>
-              )}
+                {unreadNotificationsCount > 0 && (
+                  <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-background" />
+                )}
+              </button>
 
             </div>
 
@@ -2298,6 +2346,15 @@ export default function Dashboard(): JSX.Element {
         onClose={() =>
           setOpenShare(false)
         }
+      />
+
+      {/* Notification Center Drawer */}
+      <NotificationPanel
+        open={notificationPanelOpen}
+        notifications={wellnessNotifications}
+        onClose={() => setNotificationPanelOpen(false)}
+        onRead={(id) => NotificationStore.markAsRead(id)}
+        onClear={() => NotificationStore.clear()}
       />
 
     </div>

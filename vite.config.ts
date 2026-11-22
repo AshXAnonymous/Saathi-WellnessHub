@@ -141,13 +141,9 @@ function musicLibraryPlugin(): Plugin {
    VITE CONFIG
 ========================================================= */
 
-export default defineConfig(({ mode }) => ({
-  base:
-    process.env.VERCEL
-      ? "/"
-      : mode === "production"
-      ? "/Saathi/"
-      : "/",
+export default defineConfig(() => ({
+  base: "/",
+
 
   /* =======================================================
      DEV SERVER
@@ -178,7 +174,9 @@ export default defineConfig(({ mode }) => ({
 
     VitePWA({
       registerType: "autoUpdate",
-
+      devOptions: {
+        enabled: true,
+      },
       includeAssets: [
         "favicon.ico",
         "robots.txt",
