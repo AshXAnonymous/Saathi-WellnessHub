@@ -381,7 +381,7 @@ export default function MusicScreen() {
 
   const waveformCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const waveformDataRef = useRef<Uint8Array | null>(null);
+  const waveformDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
 
   const animationFrameRef = useRef<number | null>(null);
 
