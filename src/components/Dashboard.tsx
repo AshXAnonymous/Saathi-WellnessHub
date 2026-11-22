@@ -1,6 +1,6 @@
 // src/components/Dashboard.tsx
 
-import React, { useMemo, useEffect, useState, useRef } from "react";
+import React, { useMemo, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTheme } from "@/context/ThemeContext";
 import type { HSL } from "@/context/ThemeContext";
@@ -93,12 +93,6 @@ export default function Dashboard(): JSX.Element {
   ========================================================== */
 
   const [openShare, setOpenShare] = useState(false);
-
-  const [stats] = useState({
-    moodAverage: 4,
-    happiestDay: "Thursday",
-    streak: 5,
-  });
 
   const [showModePopup, setShowModePopup] =
     useState<boolean>(() => {
@@ -2352,7 +2346,6 @@ export default function Dashboard(): JSX.Element {
         onClose={() =>
           setOpenShare(false)
         }
-        stats={stats}
       />
 
       {/* Notification Center Drawer */}

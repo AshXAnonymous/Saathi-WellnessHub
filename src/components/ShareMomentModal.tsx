@@ -5,13 +5,13 @@ import {
   type RefObject,
 } from "react";
 
+import { differenceInCalendarDays } from "date-fns";
 import { toPng } from "html-to-image";
 import { Check, Copy, Download, Share2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { shareToSocial } from "@/utils/shareToSocial";
 import { supabase } from "@/supabaseClient";
-import WellnessEngine from "@/features/wellness/services/WellnessEngine";
 
 type WellnessStats = {
   moodAverage: number;
@@ -25,230 +25,95 @@ type WellnessStats = {
   summary: string;
 };
 
-type Profile = {
-  name?: string;
-  full_name?: string;
-  username?: string;
-  avatar_url?: string;
-};
-
 type Props = {
   open: boolean;
   onClose: () => void;
 };
 
 type ProfileResponse = {
-  profile: Profile | null;
+  displayName: string;
   stats: WellnessStats;
 };
 
-type BackendProfileResponse = {
-  profile?: Profile | null;
-  stats?: Partial<WellnessStats> | null;
-  error?: string;
-};
-
-const configuredApiBase = (
-  import.meta.env.VITE_API_URL || "/api"
-).replace(/\/$/, "");
-
-const profileWellnessEndpoint =
-  configuredApiBase.endsWith("/api")
-    ? `${configuredApiBase}/profile/me`
-    : `${configuredApiBase}/api/profile/me`;
-
-const DEFAULT_WELLNESS_STATS: WellnessStats = {
-  moodAverage: 78,
-  happiestDay: "Today",
-  streak: 3,
-  bestStreak: 7,
-  wellnessScore: 82,
-  meditationMinutes: 15,
-  journalEntries: 5,
-  wellnessStatus: "Balanced",
-  summary: "Taking small, mindful steps toward peace and balance.",
-};
+type DatedRecord = { created_at: string };
 
 function toSafeNumber(value: number | null | undefined): number {
   const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) {
-    return 0;
-  }
-  return Math.max(0, numericValue);
+  return Number.isFinite(numericValue) ? Math.max(0, numericValue) : 0;
 }
 
-function normalizeWellnessStats(
-  stats?: Partial<WellnessStats> | null,
-): WellnessStats {
-  const score = Math.min(
-    100,
-    Math.round(toSafeNumber(stats?.wellnessScore ?? DEFAULT_WELLNESS_STATS.wellnessScore)),
-  );
+function getActivityStreaks(records: DatedRecord[]) {
+  const days = [...new Set(
+    records.map(({ created_at }) => new Date(created_at).setHours(0, 0, 0, 0)),
+  )].filter(Number.isFinite).sort((a, b) => a - b);
 
-  return {
-    moodAverage: Math.min(
-      100,
-      Math.round(toSafeNumber(stats?.moodAverage ?? DEFAULT_WELLNESS_STATS.moodAverage)),
-    ),
-    happiestDay:
-      typeof stats?.happiestDay === "string" && stats.happiestDay.trim()
-        ? stats.happiestDay
-        : DEFAULT_WELLNESS_STATS.happiestDay,
-    streak: Math.max(
-      1,
-      Math.round(toSafeNumber(stats?.streak ?? DEFAULT_WELLNESS_STATS.streak)),
-    ),
-    bestStreak: Math.max(
-      1,
-      Math.round(toSafeNumber(stats?.bestStreak ?? DEFAULT_WELLNESS_STATS.bestStreak)),
-    ),
-    wellnessScore: score,
-    meditationMinutes: Math.round(
-      toSafeNumber(stats?.meditationMinutes ?? DEFAULT_WELLNESS_STATS.meditationMinutes),
-    ),
-    journalEntries: Math.round(
-      toSafeNumber(stats?.journalEntries ?? DEFAULT_WELLNESS_STATS.journalEntries),
-    ),
-    wellnessStatus:
-      typeof stats?.wellnessStatus === "string" && stats.wellnessStatus.trim()
-        ? stats.wellnessStatus
-        : getMoodLabel(score),
-    summary:
-      typeof stats?.summary === "string" && stats.summary.trim()
-        ? stats.summary
-        : DEFAULT_WELLNESS_STATS.summary,
-  };
+  let streak = 0;
+  let bestStreak = 0;
+  for (let index = 0; index < days.length; index++) {
+    const consecutive = index > 0 && differenceInCalendarDays(days[index], days[index - 1]) === 1;
+    streak = consecutive ? streak + 1 : 1;
+    bestStreak = Math.max(bestStreak, streak);
+  }
+
+  const daysSinceLastActivity = differenceInCalendarDays(new Date(), days[days.length - 1]);
+  return { streak: daysSinceLastActivity === 0 || daysSinceLastActivity === 1 ? streak : 0, bestStreak };
 }
 
 async function fetchProfileAndStats(): Promise<ProfileResponse> {
-  const token = localStorage.getItem("saathi_access_token");
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Sign in to load your wellness card.");
 
-  // 1. Try remote API with a short 2s timeout
-  let remoteData: BackendProfileResponse | null = null;
-  try {
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 2000);
+  const [profile, moods, journals, meditation, score] = await Promise.all([
+    supabase.from("profiles").select("full_name").single(),
+    supabase.from("moods").select("energy_level, created_at")
+      .eq("user_id", user.id).order("created_at", { ascending: false }),
+    supabase.from("journals").select("created_at").eq("user_id", user.id),
+    supabase.from("meditation_sessions").select("duration, created_at")
+      .eq("user_id", user.id).eq("completed", true),
+    supabase.from("wellness_scores").select("final_energy_level")
+      .eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
 
-    const response = await fetch(profileWellnessEndpoint, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      signal: controller.signal,
-    });
-    window.clearTimeout(timeoutId);
-
-    if (response.ok) {
-      remoteData = (await response.json().catch(() => null)) as BackendProfileResponse | null;
-    }
-  } catch {
-    // Remote API is not available or timed out; will fall back to local sources
+  if (moods.error || journals.error || meditation.error || score.error) {
+    throw new Error("We couldn't load your wellness data. Close and reopen the card to try again.");
   }
 
-  // 2. Resolve Profile (remote, Supabase user, or localStorage)
-  let resolvedProfile: Profile | null = remoteData?.profile ?? null;
-
-  if (!resolvedProfile?.name && !resolvedProfile?.full_name) {
-    try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (user) {
-        resolvedProfile = {
-          name:
-            user.user_metadata?.name ||
-            user.user_metadata?.full_name ||
-            user.email?.split("@")[0],
-          full_name:
-            user.user_metadata?.full_name || user.user_metadata?.name,
-          username: user.email?.split("@")[0],
-        };
-      }
-    } catch {
-      // Supabase user fetch failed
-    }
-
-    if (!resolvedProfile?.name && !resolvedProfile?.full_name) {
-      try {
-        const storedUser = localStorage.getItem("user");
-        if (storedUser) {
-          const parsed = JSON.parse(storedUser);
-          const name =
-            parsed?.user?.user_metadata?.name ||
-            parsed?.user?.user_metadata?.full_name ||
-            parsed?.name ||
-            parsed?.full_name ||
-            parsed?.user?.email?.split("@")[0];
-          if (name) {
-            resolvedProfile = { name, full_name: name };
-          }
-        }
-      } catch {
-        // Local user parse failed
-      }
-    }
+  const moodRecords: (DatedRecord & { energy_level: number | null })[] = moods.data;
+  const journalRecords: DatedRecord[] = journals.data;
+  const meditationRecords: (DatedRecord & { duration: number })[] = meditation.data;
+  const scoredMoods = moodRecords.filter(({ energy_level }) => energy_level != null);
+  let happiestMood: (typeof scoredMoods)[number] | undefined;
+  let moodTotal = 0;
+  for (const mood of scoredMoods) {
+    moodTotal += mood.energy_level;
+    if (!happiestMood || mood.energy_level > happiestMood.energy_level) happiestMood = mood;
   }
 
-  // 3. Resolve Stats (remote, or WellnessEngine snapshot)
-  let resolvedStats: WellnessStats;
-
-  if (remoteData?.stats && Object.keys(remoteData.stats).length > 0) {
-    resolvedStats = normalizeWellnessStats(remoteData.stats);
-  } else {
-    try {
-      const snapshot = await WellnessEngine.load();
-
-      const calculatedScore = Math.round(toSafeNumber(snapshot.score?.score));
-      const moodValence = snapshot.score?.breakdown?.mood
-        ? Math.min(100, Math.round(snapshot.score.breakdown.mood * 5))
-        : 75;
-
-      resolvedStats = normalizeWellnessStats({
-        wellnessScore: calculatedScore > 0 ? calculatedScore : 82,
-        moodAverage: moodValence,
-        streak: snapshot.streak?.overall || 3,
-        bestStreak: Math.max(snapshot.streak?.overall || 3, 7),
-        meditationMinutes: snapshot.meditation?.minutes || 15,
-        journalEntries: snapshot.journal?.totalEntries || 4,
-        wellnessStatus: snapshot.mood?.status || getMoodLabel(calculatedScore || 82),
-        summary:
-          snapshot.mood?.message ||
-          "Taking small, steady steps toward peace and balance.",
-        happiestDay: snapshot.journalAnalytics?.happiestDay || "Today",
-      });
-    } catch {
-      resolvedStats = DEFAULT_WELLNESS_STATS;
-    }
-  }
+  const wellnessScore = Math.min(100, toSafeNumber(score.data?.final_energy_level));
+  const activity = [...moodRecords, ...journalRecords, ...meditationRecords];
 
   return {
-    profile: resolvedProfile,
-    stats: resolvedStats,
+    displayName:
+      profile.data?.full_name?.trim() ||
+      user.user_metadata?.full_name?.trim() ||
+      user.user_metadata?.name?.trim() ||
+      user.email?.split("@")[0] ||
+      "Saathi Mind",
+    stats: {
+      ...getActivityStreaks(activity),
+      moodAverage: scoredMoods.length ? Math.round(moodTotal / scoredMoods.length) : 0,
+      happiestDay: happiestMood
+        ? new Date(happiestMood.created_at).toLocaleDateString("en-IN", { weekday: "long" })
+        : "—",
+      wellnessScore,
+      meditationMinutes: meditationRecords.reduce((sum, session) => sum + toSafeNumber(session.duration), 0),
+      journalEntries: journalRecords.length,
+      wellnessStatus: wellnessScore > 0 ? getMoodLabel(wellnessScore) : "No score yet",
+      summary: activity.length
+        ? "Taking small, mindful steps toward peace and balance."
+        : "Your progress will appear here as you log your activities.",
+    },
   };
-}
-
-function getDisplayName(profile: Profile | null) {
-  if (profile?.full_name || profile?.name || profile?.username) {
-    return profile.full_name || profile.name || profile.username;
-  }
-
-  try {
-    const storedUser = localStorage.getItem("user");
-    if (storedUser) {
-      const parsed = JSON.parse(storedUser);
-      const name =
-        parsed?.user?.user_metadata?.name ||
-        parsed?.user?.user_metadata?.full_name ||
-        parsed?.name ||
-        parsed?.full_name ||
-        parsed?.user?.email?.split("@")[0];
-      if (name) return name;
-    }
-  } catch {}
-
-  return "Saathi Mind";
 }
 
 function getMoodLabel(moodAverage: number) {
@@ -276,12 +141,12 @@ function formatDate() {
 }
 
 function WellnessStatsCard({
-  profile,
+  displayName,
   stats,
   cardRef,
   isExport = false,
 }: {
-  profile: Profile | null;
+  displayName: string;
   stats: WellnessStats;
   cardRef: RefObject<HTMLDivElement>;
   isExport?: boolean;
@@ -426,7 +291,7 @@ function WellnessStatsCard({
             <div>
               <p className="text-[11px] sm:text-xs text-slate-500 truncate">🥰 Happiest Day</p>
               <p className={`font-bold truncate ${isExport ? "text-lg" : "text-base sm:text-lg"}`}>
-                {stats.happiestDay || "Today"}
+                {stats.happiestDay}
               </p>
             </div>
           </div>
@@ -434,7 +299,7 @@ function WellnessStatsCard({
 
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs sm:text-sm font-semibold truncate">{getDisplayName(profile)}</p>
+            <p className="text-xs sm:text-sm font-semibold truncate">{displayName}</p>
             <p className="text-[10px] sm:text-xs text-white/70">Your zen companion</p>
           </div>
 
@@ -453,35 +318,30 @@ export default function ShareMomentModal({ open, onClose }: Props) {
   const cardRef = useRef<HTMLDivElement>(null);
   const exportCardRef = useRef<HTMLDivElement>(null);
 
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [stats, setStats] = useState<WellnessStats>(DEFAULT_WELLNESS_STATS);
-  const [loading, setLoading] = useState(false);
+  const [cardData, setCardData] = useState<ProfileResponse | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [exporting, setExporting] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setCardData(null);
+      setLoadError("");
+      return;
+    }
 
     let cancelled = false;
 
     async function loadData() {
-      setLoading(true);
-
       try {
         const response = await fetchProfileAndStats();
 
         if (!cancelled) {
-          setProfile(response.profile);
-          setStats(response.stats);
+          setCardData(response);
         }
       } catch (err) {
         if (!cancelled) {
-          console.warn("Using default wellness stats:", err);
-          setStats(DEFAULT_WELLNESS_STATS);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
+          setLoadError(err instanceof Error ? err.message : "Unable to load your wellness card.");
         }
       }
     }
@@ -494,6 +354,8 @@ export default function ShareMomentModal({ open, onClose }: Props) {
   }, [open]);
 
   if (!open) return null;
+
+  const stats = cardData?.stats;
 
   async function generateCardImage() {
     const target = exportCardRef.current || cardRef.current;
@@ -549,6 +411,7 @@ export default function ShareMomentModal({ open, onClose }: Props) {
   }
 
   async function handleCopyImage() {
+    if (!stats) return;
     try {
       setExporting(true);
       const imageUrl = await generateCardImage();
@@ -575,6 +438,7 @@ export default function ShareMomentModal({ open, onClose }: Props) {
   }
 
   async function handleShare() {
+    if (!stats) return;
     try {
       setExporting(true);
       const imageUrl = await generateCardImage();
@@ -635,15 +499,15 @@ export default function ShareMomentModal({ open, onClose }: Props) {
 
         {/* Scrollable content */}
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 pb-6 sm:px-8 sm:py-6 sm:pb-8">
-          {loading && (
+          {!cardData && (
             <div className="rounded-3xl border bg-muted/30 p-8 text-center">
-              <p className="text-sm text-muted-foreground">
-                Preparing your wellness card...
+              <p role={loadError ? "alert" : "status"} className="text-sm text-muted-foreground">
+                {loadError || "Preparing your wellness card..."}
               </p>
             </div>
           )}
 
-          {!loading && (
+          {cardData && (
             <div className="space-y-6">
               <div className="rounded-3xl border bg-muted/20 p-2.5 sm:p-5">
                 <div className="mb-4">
@@ -654,8 +518,8 @@ export default function ShareMomentModal({ open, onClose }: Props) {
                 </div>
 
                 <WellnessStatsCard
-                  profile={profile}
-                  stats={stats}
+                  displayName={cardData.displayName}
+                  stats={cardData.stats}
                   cardRef={cardRef}
                   isExport={false}
                 />
@@ -734,12 +598,14 @@ export default function ShareMomentModal({ open, onClose }: Props) {
           opacity: 1,
         }}
       >
-        <WellnessStatsCard
-          profile={profile}
-          stats={stats}
-          cardRef={exportCardRef}
-          isExport={true}
-        />
+        {cardData && (
+          <WellnessStatsCard
+            displayName={cardData.displayName}
+            stats={cardData.stats}
+            cardRef={exportCardRef}
+            isExport={true}
+          />
+        )}
       </div>
     </div>
   );
