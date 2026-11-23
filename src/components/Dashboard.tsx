@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { useTheme } from "@/context/ThemeContext";
 import type { HSL } from "@/context/ThemeContext";
 import ShareModal from "./ShareMomentModal";
+import SubscriptionCard from "./SubscriptionCard";
 import { motion, AnimatePresence } from "motion/react";
 
 import {
@@ -1995,6 +1996,10 @@ export default function Dashboard(): JSX.Element {
       ====================================================== */}
 
       <main className="relative z-10 mx-auto mt-8 max-w-7xl space-y-8 px-6 pb-32 sm:px-8">
+
+        <section aria-label="Saathi Plus">
+          <SubscriptionCard />
+        </section>
 
         {/* Feature grid */}
         <section>
