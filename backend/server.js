@@ -1021,41 +1021,55 @@ const profileColumns = [
 ];
 
 app.get("/api/profile", authRequired, async (req, res) => {
-  const result = await pool.query("SELECT * FROM profiles WHERE user_id = $1", [
-    req.auth.sub,
-  ]);
+  const result = await pool.query(
+    `SELECT profiles.*, saathi_users.full_name AS signup_name
+       FROM saathi_users
+       LEFT JOIN profiles ON profiles.user_id = saathi_users.id
+       WHERE saathi_users.id = $1`,
+    [req.auth.sub],
+  );
+  const accountProfile = result.rows[0];
+  if (!accountProfile) return res.json({ data: null });
+
+  const { signup_name, ...profile } = accountProfile;
 
   res.json({
-    data: result.rows[0] || null,
+    data: {
+      ...profile,
+      user_id: req.auth.sub,
+      full_name: profile.full_name?.trim() ? profile.full_name : signup_name,
+    },
   });
 });
 
 app.patch("/api/profile", authRequired, async (req, res) => {
-  const assignments = ["updated_at = NOW()"];
+  const columns = profileColumns.filter((column) => req.body[column] !== undefined);
+  const values = [req.auth.sub, ...columns.map((column) => req.body[column])];
+  const placeholders = columns.map((_, index) => `$${index + 2}`);
+  const assignments = [
+    "updated_at = NOW()",
+    ...columns.map((column) => `${column} = EXCLUDED.${column}`),
+  ];
 
-  const values = [req.auth.sub];
-
-  for (const column of profileColumns) {
-    if (req.body[column] === undefined) {
-      continue;
-    }
-
-    values.push(req.body[column]);
-
-    assignments.push(`${column} = $${values.length}`);
+  if (!columns.includes("full_name")) {
+    columns.push("full_name");
+    placeholders.push("saathi_users.full_name");
   }
 
   const result = await pool.query(
-    `UPDATE profiles
-       SET ${assignments.join(", ")}
-       WHERE user_id = $1
+    `INSERT INTO profiles (user_id, ${columns.join(", ")})
+       SELECT saathi_users.id, ${placeholders.join(", ")}
+       FROM saathi_users
+       WHERE saathi_users.id = $1
+       ON CONFLICT (user_id) DO UPDATE SET ${assignments.join(", ")}
        RETURNING *`,
     values,
   );
 
-  res.json({
-    data: result.rows[0] || null,
-  });
+  const profile = result.rows[0];
+  if (!profile) return res.status(404).json({ error: "User not found" });
+
+  res.json({ data: profile });
 });
 
 app.get("/api/settings", authRequired, async (req, res) => {

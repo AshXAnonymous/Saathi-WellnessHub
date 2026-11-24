@@ -35,7 +35,7 @@ const AuthScreen = () => {
     try {
       // ================= SIGN UP =================
       if (type === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
+        const { error } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -48,20 +48,7 @@ const AuthScreen = () => {
 
         if (error) throw error;
 
-        // create profile safely (only once)
-        if (data.user) {
-          await supabase.from('profiles').upsert(
-            {
-              user_id: data.user.id,
-              full_name: fullName,
-            },
-            {
-              onConflict: 'user_id',
-            },
-          );
-        }
-
-        alert('Verification email sent 🎉. Please verify before login. ✅');
+        alert('Account created. You can now sign in.');
         return;
       }
 

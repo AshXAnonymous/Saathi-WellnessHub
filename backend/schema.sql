@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS profiles (
 );
 
 ALTER TABLE profiles
+ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+ALTER TABLE profiles
 ADD COLUMN IF NOT EXISTS community_room_id TEXT;
 
 ALTER TABLE profiles

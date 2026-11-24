@@ -8,10 +8,6 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(clients.claim());
 });
 
-self.addEventListener("fetch", (event) => {
-  event.respondWith(fetch(event.request));
-});
-
 // Native Notification Display & Click Handling
 self.addEventListener("push", (event) => {
   if (!event.data) return;
