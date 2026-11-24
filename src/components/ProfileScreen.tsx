@@ -350,9 +350,12 @@ export default function ProfileScreen() {
         .single();
 
       if (cancelled) return;
-      if (profile) {
-        setUserName(profile.full_name || "");
-      }
+      setUserName(
+        profile?.full_name?.trim() ||
+          authData.user.user_metadata?.full_name ||
+          authData.user.user_metadata?.name ||
+          "",
+      );
       setProfileImage(profile?.avatar_url || null);
     };
 
