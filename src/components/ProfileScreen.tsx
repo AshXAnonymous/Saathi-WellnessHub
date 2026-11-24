@@ -33,6 +33,16 @@ import { useGoals } from "@/context/GoalsContext";
 import UpgradeModal from "./UpgradeModal";
 import { useSubscription } from "@/context/SubscriptionContext";
 
+const AVATARS = [
+  "/Avatar/Male1.png",
+  "/Avatar/Male2.png",
+  "/Avatar/Female1.png",
+  "/Avatar/Female2.png",
+];
+
+// Base64 adds about one-third to the file size. Keep the JSON upload below the API limit.
+const MAX_AVATAR_FILE_SIZE = 7 * 1024 * 1024;
+
 /* ------------------------------------------------------------------
    Decorative doodle SVGs
    Theme-aware line art — purely visual.
@@ -247,8 +257,10 @@ export default function ProfileScreen() {
   const [userEmail, setUserEmail] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
 
-  const [profileImage, setProfileImage] = useState<string | null>(null);
+  const [profileImage, setProfileImage] = useState<string | null>();
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const [isSavingAvatar, setIsSavingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
 
   /* REAL STATS STATE */
   const [statsData, setStatsData] = useState({
@@ -320,10 +332,12 @@ export default function ProfileScreen() {
 
   /* FETCH USER PROFILE */
   useEffect(() => {
+    let cancelled = false;
     const loadProfile = async () => {
       const { data: authData } =
         await supabase.auth.getUser();
 
+      if (cancelled) return;
       if (!authData.user) return navigate("/auth");
 
       setUserId(authData.user.id);
@@ -331,16 +345,21 @@ export default function ProfileScreen() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("full_name")
+        .select("full_name, avatar_url")
         .eq("id", authData.user.id)
         .single();
 
+      if (cancelled) return;
       if (profile) {
         setUserName(profile.full_name || "");
       }
+      setProfileImage(profile?.avatar_url || null);
     };
 
     loadProfile();
+    return () => {
+      cancelled = true;
+    };
   }, [navigate]);
 
   const handleSaveProfile = async () => {
@@ -352,6 +371,60 @@ export default function ProfileScreen() {
       .eq("id", userId);
 
     if (!error) setIsEditing(false);
+  };
+
+  const handleSaveAvatar = async (image: string | File) => {
+    if (!userId || isSavingAvatar) return;
+
+    setAvatarError("");
+    setIsSavingAvatar(true);
+
+    try {
+      let avatarUrl: string;
+      if (typeof image === "string") {
+        avatarUrl = image;
+      } else {
+        if (!image.type.startsWith("image/")) {
+          setAvatarError("Choose an image file.");
+          return;
+        }
+        if (image.size > MAX_AVATAR_FILE_SIZE) {
+          setAvatarError("Choose an image that is 7 MB or smaller.");
+          return;
+        }
+
+        try {
+          avatarUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(image);
+          });
+          const preview = new Image();
+          preview.src = avatarUrl;
+          await preview.decode();
+        } catch {
+          setAvatarError("Could not open this image. Choose another file.");
+          return;
+        }
+      }
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .update({ avatar_url: avatarUrl })
+        .eq("id", userId);
+
+      if (error || !data?.avatar_url) {
+        throw error ?? new Error("Profile picture was not saved");
+      }
+
+      setProfileImage(data.avatar_url);
+      setShowAvatarPicker(false);
+    } catch {
+      setAvatarError("Could not save your profile picture. Please try again.");
+    } finally {
+      setIsSavingAvatar(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -499,8 +572,15 @@ export default function ProfileScreen() {
           <CardContent className="p-6">
             <div className="flex items-center space-x-4">
 
-              <div
-                onClick={() => setShowAvatarPicker(true)}
+              <button
+                type="button"
+                aria-label="Change profile picture"
+                disabled={!userId || profileImage === undefined}
+                onClick={() => {
+                  setAvatarError("");
+                  setShowAvatarPicker(true);
+                }}
+                className="h-10 w-10 shrink-0 cursor-pointer overflow-hidden rounded-full disabled:cursor-default"
               >
                 {profileImage ? (
                   <img
@@ -511,7 +591,7 @@ export default function ProfileScreen() {
                 ) : (
                   <User className="h-10 w-10 text-primary" />
                 )}
-              </div>
+              </button>
 
               <div className="flex-1 space-y-2">
                 {isEditing ? (
@@ -728,50 +808,51 @@ export default function ProfileScreen() {
               </h3>
 
               <div className="grid grid-cols-2 gap-4">
-                {[
-                  "/Avatar/Female1.png",
-                  "/Avatar/Male2.png",
-                  "/Avatar/Female1.png",
-                  "/Avatar/Female2.png",
-                ].map((avatar, index) => (
-                  <div
-                    key={index}
-                    onClick={() => {
-                      setProfileImage(avatar);
-                      setShowAvatarPicker(false);
-                    }}
+                {AVATARS.map((avatar, index) => (
+                  <button
+                    type="button"
+                    key={avatar}
+                    disabled={isSavingAvatar}
+                    onClick={() => handleSaveAvatar(avatar)}
                     className="mx-auto flex h-24 w-24 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-primary/10 ring-2 ring-background transition hover:scale-105"
                   >
                     <img
                       src={avatar}
-                      alt="avatar"
+                      alt={`Avatar ${index + 1}`}
                       className="h-full w-full object-cover"
                     />
-                  </div>
+                  </button>
                 ))}
               </div>
 
               <div className="space-y-2">
                 <Input
                   type="file"
+                  aria-label="Upload a profile picture"
                   accept="image/*"
+                  disabled={isSavingAvatar}
                   onChange={(e) => {
-                    const file = e.target.files?.[0];
-
-                    if (!file) return;
-
-                    const imageUrl =
-                      URL.createObjectURL(file);
-
-                    setProfileImage(imageUrl);
-                    setShowAvatarPicker(false);
+                    const file = e.currentTarget.files?.[0];
+                    e.currentTarget.value = "";
+                    if (file) handleSaveAvatar(file);
                   }}
                 />
+                {isSavingAvatar && (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    Saving profile picture…
+                  </p>
+                )}
+                {avatarError && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {avatarError}
+                  </p>
+                )}
               </div>
 
               <Button
                 variant="outline"
                 className="w-full"
+                disabled={isSavingAvatar}
                 onClick={() =>
                   setShowAvatarPicker(false)
                 }

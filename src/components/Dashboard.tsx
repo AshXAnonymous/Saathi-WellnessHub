@@ -888,7 +888,6 @@ export default function Dashboard(): JSX.Element {
               icon: "/icons/icon-192x192.png",
               badge: "/icons/icon-192x192.png",
               tag: "wellness-insight-auto",
-              renotify: true,
             });
             return;
           }
