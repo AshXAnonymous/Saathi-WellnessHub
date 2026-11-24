@@ -13,7 +13,9 @@ async function request(path, options = {}) {
 		},
 	});
 	const payload = await response.json().catch(() => ({}));
-	if (!response.ok) throw new Error(payload.error || 'Request failed');
+	if (!response.ok) {
+		throw Object.assign(new Error(payload?.error || 'Request failed'), { status: response.status });
+	}
 	return payload;
 }
 
@@ -125,7 +127,7 @@ function profileQuery() {
 			const run = request('/profile', {
 				method,
 				...(method === 'PATCH' ? { body: JSON.stringify(body) } : {}),
-			}).then((payload) => ({ data: payload.data ?? null, error: null }))
+			}).then((payload) => ({ data: payload?.data ?? null, error: null }))
 			  .catch((error) => ({ data: null, error }));
 			return run.then(resolve, reject);
 		},

@@ -43,6 +43,13 @@ const AVATARS = [
 // Base64 adds about one-third to the file size. Keep the JSON upload below the API limit.
 const MAX_AVATAR_FILE_SIZE = 7 * 1024 * 1024;
 
+const AVATAR_SAVE_ERRORS: Record<number, string> = {
+  401: "Your session expired. Sign in again to save your profile picture.",
+  403: "Your account could not save this picture. Sign in again and retry.",
+  413: "The server could not accept a picture this large. Choose a smaller file.",
+  429: "Too many requests. Wait a moment and try saving your picture again.",
+};
+
 /* ------------------------------------------------------------------
    Decorative doodle SVGs
    Theme-aware line art — purely visual.
@@ -381,6 +388,7 @@ export default function ProfileScreen() {
 
     setAvatarError("");
     setIsSavingAvatar(true);
+    let requestMethod = "PATCH";
 
     try {
       let avatarUrl: string;
@@ -417,14 +425,37 @@ export default function ProfileScreen() {
         .update({ avatar_url: avatarUrl })
         .eq("id", userId);
 
-      if (error || !data?.avatar_url) {
-        throw error ?? new Error("Profile picture was not saved");
+      if (error) throw error;
+
+      if (data?.avatar_url !== avatarUrl) {
+        requestMethod = "GET";
+        const { data: savedProfile, error: readError } = await supabase
+          .from("profiles")
+          .select("avatar_url")
+          .eq("id", userId)
+          .single();
+
+        if (readError) throw readError;
+        if (savedProfile?.avatar_url !== avatarUrl) {
+          console.error("The profile API did not confirm the avatar update (PATCH and GET /api/profile).");
+          setAvatarError("The profile server did not confirm the picture was saved. Please try again.");
+          return;
+        }
       }
 
-      setProfileImage(data.avatar_url);
+      setProfileImage(avatarUrl);
       setShowAvatarPicker(false);
-    } catch {
-      setAvatarError("Could not save your profile picture. Please try again.");
+    } catch (error) {
+      const status =
+        error instanceof Error && "status" in error && typeof error.status === "number"
+          ? error.status
+          : undefined;
+      console.error(`Profile picture save failed (${requestMethod} /api/profile).`, { status });
+      setAvatarError(
+        status === undefined
+          ? "Could not reach the profile server. Check your connection and try again."
+          : AVATAR_SAVE_ERRORS[status] ?? `Could not save your profile picture (HTTP ${status}). Please try again.`,
+      );
     } finally {
       setIsSavingAvatar(false);
     }
